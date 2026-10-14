@@ -25,20 +25,14 @@ export PATH=$HOME/sdk/go/bin:$PATH
 # 3. 配置元数据库连接
 cp configs/config.example.yaml configs/config.yaml
 
-# 4. 启动（自动建元数据表）
+# 4. 启动（自动建元数据表 + admin 账号 + Web 后台）
 make build && ./bin/bincat -config configs/config.yaml
 
-# 5. 配置数据源/sink/规则（M1 阶段手工插库，Web 后台在 M3）
-mysql $meta_db -e "
-INSERT INTO sink(name,type,params,enabled) VALUES('debug','console','{}',1);
-INSERT INTO datasource(name,host,port,user,password,server_id,gtid_mode,enabled)
-  VALUES('local','127.0.0.1',3306,'user','pass',1001,1,1);
-SET @ds := (SELECT id FROM datasource WHERE name='local');
-INSERT INTO rule(datasource_id,name,schema_name,table_pattern,actions,watch_fields,sink_id,owner_id,enabled)
-  VALUES(@ds,'orders-status','shop','orders_*','update','[\"status\"]',1,1,1);"
-
-# 6. 写数据验证
-mysql shop -e "UPDATE orders_2026 SET status='paid' WHERE id=1"
+# 5. 打开 Web 后台 http://localhost:8080（admin / 配置的 initial_admin_password）
+#    - 数据源管理：添加被监听 MySQL（自动校验 binlog 前置条件）
+#    - 投递目标：console / http webhook / kafka / rabbitmq（可测试连通）
+#    - 监听规则：选库表 → 选操作 → watch 字段（热生效，不断流）
+#    - 监控面板：各源位点/状态；Prometheus 指标 :9090/metrics
 ```
 
 ## 项目结构
@@ -76,11 +70,11 @@ deployments/         docker-compose（MySQL 演示环境）
 
 ## 路线图
 
-- [x] M1 核心管线：canal 接入、三级过滤、console sink、位点断点续传
-- [ ] M2 生产投递：http/kafka/rabbitmq sink、重试、block/dlq、sink 热更新
-- [ ] M3 Web 后台：登录、数据源/规则/sink/用户管理、监控面板、多用户隔离
-- [ ] M4 可观测：Prometheus 指标、集成测试
-- [ ] M5 增强：HA、全量初始化、DLQ 重放
+- [x] M1 核心管线：canal 接入、三级过滤、console sink、位点断点续传（已验证）
+- [x] M2 生产投递：http/kafka/rabbitmq sink、阻塞式 at-least-once（已验证故障冻结+补发）
+- [x] M3 Web 后台：登录、数据源/规则/sink/用户管理、规则 owner 隔离、热更新（已验证 API 建规则即时生效）
+- [x] M4 可观测：Prometheus 指标（延迟/事件/过滤/投递/重连/位点）
+- [ ] M5 增强：HA、全量初始化、DLQ 重放、testcontainers 集成测试
 
 ## 前置条件（被监听 MySQL）
 
