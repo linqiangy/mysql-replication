@@ -1,12 +1,24 @@
 GO ?= $(HOME)/sdk/go/bin/go
 
-.PHONY: build run test vet compose-up compose-down seed help
+.PHONY: build run test vet compose-up compose-down start stop restart status help
 
 build: ## 编译 bincat 到 bin/
 	$(GO) build -o bin/bincat ./cmd/bincat
 
-run: ## 本地运行（需先 compose-up 并插入数据源/规则/sink）
+run: ## 前台运行（调试用；生产用 make start）
 	$(GO) run ./cmd/bincat -config configs/config.yaml
+
+start: ## 后台启动（bincat.sh 封装，日志 logs/bincat.log）
+	./bincat.sh start
+
+stop: ## 停止（优雅停机）
+	./bincat.sh stop
+
+restart: ## 重启
+	./bincat.sh restart
+
+status: ## 查看运行状态
+	./bincat.sh status
 
 test: ## 单元测试
 	$(GO) test ./...
@@ -19,13 +31,6 @@ compose-up: ## 启动本地 MySQL 环境
 
 compose-down: ## 停止本地环境
 	cd deployments && docker compose down
-
-seed: ## 写入演示数据源/sink/规则（M1 阶段手动配置通道；密码需先加密，演示用空密钥明文链路）
-	mysql -h127.0.0.1 -P33061 -uroot -proot123 bincat_meta -e "\
-	INSERT INTO sink(name,type,params,enabled) VALUES('debug','console','{}',1); \
-	INSERT INTO datasource(name,host,port,user,password,server_id,gtid_mode,enabled) \
-	  VALUES('local','127.0.0.1',33061,'bincat',X'00',1001,1,1) \
-	  ON DUPLICATE KEY UPDATE enabled=1;"
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
