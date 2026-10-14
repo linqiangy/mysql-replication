@@ -9,7 +9,7 @@ data/
 # Go
 *.test
 *.out
-vendor/
+/vendor/
 
 # IDE
 .idea/
@@ -19,3 +19,10 @@ vendor/
 # 日志
 *.log
 logs/
+
+# 个人协作记录与本地诊断文件
+.workbuddy/
+.playwright-mcp/
+.env
+*.swp
+*.swo

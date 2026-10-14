@@ -1,0 +1,26 @@
+[Unit]
+Description=bincat MySQL binlog change delivery service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=bincat
+Group=bincat
+WorkingDirectory=/opt/bincat
+EnvironmentFile=/etc/bincat/bincat.env
+ExecStart=/opt/bincat/current/bin/bincat -config /etc/bincat/config.yaml
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=60s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -4,11 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>bincat 控制台</title>
-<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
-<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-<script src="https://unpkg.com/element-plus"></script>
-<script src="https://unpkg.com/element-plus/dist/locale/zh-cn"></script>
-<script src="https://unpkg.com/@element-plus/icons-vue"></script>
+<link rel="stylesheet" href="/vendor/element-plus.css">
+<script src="/vendor/vue.global.prod.js"></script>
+<script src="/vendor/element-plus.js"></script>
+<script src="/vendor/element-plus-locale-zh-cn.js"></script>
+<script src="/vendor/element-plus-icons.js"></script>
 <style>
 body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fa; }
 .layout { display: flex; min-height: 100vh; }
@@ -77,19 +77,18 @@ const Login = {
 
 // ---------- 主布局 ----------
 const Layout = {
-  components: { Dashboard, Rules, Sinks, Datasources, Users, Checkpoints, Audit },
   template: `
   <div class="layout">
     <div class="side">
       <div class="logo">🐱 bincat</div>
       <el-menu :default-active="page" class="menu" background-color="#1d2939" text-color="#bfcbd9" active-text-color="#409EFF" @select="p=>page=p">
-        <el-menu-item index="dashboard"><el-icon><monitor/></el-icon>监控面板</el-menu-item>
-        <el-menu-item index="rules"><el-icon><filter/></el-icon>监听规则</el-menu-item>
-        <el-menu-item index="datasources" v-if="role==='admin'"><el-icon><coin/></el-icon>数据源</el-menu-item>
-        <el-menu-item index="sinks" v-if="role==='admin'"><el-icon><promotion/></el-icon>投递目标</el-menu-item>
-        <el-menu-item index="users" v-if="role==='admin'"><el-icon><user/></el-icon>用户管理</el-menu-item>
-        <el-menu-item index="checkpoints" v-if="role==='admin'"><el-icon><loc/></el-icon>位点管理</el-menu-item>
-        <el-menu-item index="audit" v-if="role==='admin'"><el-icon><list/></el-icon>审计日志</el-menu-item>
+        <el-menu-item index="dashboard"><el-icon><Monitor/></el-icon>监控面板</el-menu-item>
+        <el-menu-item index="rules"><el-icon><Filter/></el-icon>监听规则</el-menu-item>
+        <el-menu-item index="datasources" v-if="role==='admin'"><el-icon><Coin/></el-icon>数据源</el-menu-item>
+        <el-menu-item index="sinks" v-if="role==='admin'"><el-icon><Promotion/></el-icon>投递目标</el-menu-item>
+        <el-menu-item index="users" v-if="role==='admin'"><el-icon><User/></el-icon>用户管理</el-menu-item>
+        <el-menu-item index="checkpoints" v-if="role==='admin'"><el-icon><Location/></el-icon>位点管理</el-menu-item>
+        <el-menu-item index="audit" v-if="role==='admin'"><el-icon><List/></el-icon>审计日志</el-menu-item>
       </el-menu>
     </div>
     <div class="main">
@@ -285,7 +284,7 @@ const Datasources = {
         <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag>
       </template></el-table-column>
       <el-table-column label="操作" width="200"><template #default="{row}">
-        <el-button link type="success" size="small" @click="test(row)">测试</el-button>
+        <el-button link type="success" size="small" :loading="!!testing[row.id]" :disabled="!!testing[row.id]" @click="test(row)">测试</el-button>
         <el-button link type="primary" size="small" @click="openDlg(row)">编辑</el-button>
         <el-popconfirm title="确认删除？" @confirm="del(row)"><template #reference>
           <el-button link type="danger" size="small">删除</el-button>
@@ -313,6 +312,7 @@ const Datasources = {
   setup() {
     const rows = ref([]), dlg = ref(false);
     const empty = { id: 0, name: '', host: '127.0.0.1', port: 3306, user: '', password: '', server_id: 1001, gtid_mode: true, enabled: true };
+    const testing = reactive({});
     const form = reactive({ ...empty });
     const load = async () => rows.value = await api('GET', '/datasources');
     const openDlg = (row) => { Object.assign(form, empty); if (row) { Object.assign(form, row); form.password = ''; } dlg.value = true; };
@@ -330,14 +330,24 @@ const Datasources = {
       catch (e) { ElMessage.error(e.message); }
     };
     const test = async (row) => {
-      ElMessage.info('测试中...');
+      if (testing[row.id]) return;
+      testing[row.id] = true;
+      const progress = ElMessage({ message: '测试中...', type: 'info', duration: 0 });
+      let result;
       try {
         const r = await api('POST', '/datasources/' + row.id + '/test');
-        if (r.ok) ElMessage.success('连接正常'); else ElMessage.error('检查失败：' + r.error);
-      } catch (e) { ElMessage.error(e.message); }
+        result = r.ok ? { type: 'success', message: '连接正常' }
+          : { type: 'error', message: '检查失败：' + r.error };
+      } catch (e) {
+        result = { type: 'error', message: e.message };
+      } finally {
+        progress.close();
+        delete testing[row.id];
+      }
+      ElMessage(result);
     };
     onMounted(load);
-    return { rows, dlg, form, openDlg, save, del, test };
+    return { rows, dlg, form, testing, openDlg, save, del, test };
   }
 };
 
@@ -566,15 +576,23 @@ const Audit = {
 
 // ---------- 启动 ----------
 const app = createApp({
-  setup() {
-    const logged = ref(!!localStorage.getItem('token'));
-    onMounted(() => { if (!logged.value) { const t = localStorage.getItem('token'); } });
-    return { logged };
-  },
   render: () => Vue.h(localStorage.getItem('token') ? Layout : Login)
 });
 app.use(ElementPlus, { locale: ElementPlusLocaleZhCn });
-for (const [n, c] of Object.entries(ElementPlusIconsVue || {})) app.component(n, c);
+// 图标全局注册
+if (typeof ElementPlusIconsVue !== 'undefined') {
+  for (const [n, c] of Object.entries(ElementPlusIconsVue)) app.component(n, c);
+}
+// 页面组件全局注册（在 app 定义之后、mount 之前，消除定义顺序依赖）
+app.component('bincat-login', Login);
+app.component('bincat-layout', Layout);
+app.component('dashboard', Dashboard);
+app.component('rules', Rules);
+app.component('sinks', Sinks);
+app.component('datasources', Datasources);
+app.component('users', Users);
+app.component('checkpoints', Checkpoints);
+app.component('audit', Audit);
 app.mount('#app');
 </script>
 </body>

@@ -1,0 +1,26 @@
+# Linux 生产模板：环境变量由 /etc/bincat/bincat.env 提供。
+# 仅支持 ${VAR}，填写所有必需值后启动。
+meta:
+  dsn: "${BINCAT_META_DSN}"
+  secret_key: "${BINCAT_SECRET_KEY}"
+server:
+  addr: "127.0.0.1:8080"
+  initial_admin_password: "${BINCAT_ADMIN_PASSWORD}"
+  jwt_secret: "${BINCAT_JWT_SECRET}"
+  jwt_ttl: 12h
+observability:
+  log:
+    level: info
+    format: json
+  metrics:
+    enabled: true
+    addr: "127.0.0.1:9090"
+pipeline_defaults:
+  dispatch_queue_size: 256
+  ack_window_size: 64
+  max_tx_rows: 100000
+  on_tx_overflow: abort
+  checkpoint_flush_interval: 2s
+  on_sink_exhausted: block
+shutdown:
+  drain_timeout: 30s

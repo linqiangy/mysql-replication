@@ -1,5 +1,6 @@
 # bincat 启动配置（静态部分）
-# 数据源、规则、sink 存元数据库，由 Web 后台管理（M3）；M1 阶段可手工插库。
+# 数据源、规则、sink 存元数据库，由 Web 后台管理。
+# 此文件使用公开的本地演示凭据；生产部署使用 config.production.example.yaml。
 
 meta:
   # 元数据库（存数据源/规则/sink/位点/用户/审计），独立于被监听源
@@ -10,7 +11,8 @@ meta:
 server:
   addr: ":8080"
   # 首次启动创建 admin 的密码；支持 ${ENV} 插值
-  initial_admin_password: "${BINCAT_ADMIN_PASSWORD:-admin123}"
+  # 启动前显式设置该变量；仅支持 ${VAR}，不支持 shell 默认值语法。
+  initial_admin_password: "${BINCAT_ADMIN_PASSWORD}"
   # JWT 密钥；不配置则每次启动随机（重启后已登录会话失效）
   # jwt_secret: "${BINCAT_JWT_SECRET}"
 
