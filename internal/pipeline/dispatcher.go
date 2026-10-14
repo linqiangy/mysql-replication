@@ -79,13 +79,10 @@ func (d *Dispatcher) Enqueue(b Batch) {
 	d.queue <- &b
 }
 
-// AdvanceIdle 无命中事件的事务：直接推进位点（无需投递）
+// AdvanceIdle 无命中事件的事务：也走队列由 worker 顺序确认，
+// 绝不越过在途/阻塞批次推进位点（否则重启会跳过未投递事件 → 丢消息）。
 func (d *Dispatcher) AdvanceIdle(pos Position) {
-	d.mu.Lock()
-	d.lastAckedPos = pos
-	d.dirty = true
-	d.mu.Unlock()
-	d.notifyFlush()
+	d.Enqueue(Batch{EndPos: pos})
 }
 
 // worker 单线程顺序派发（保证同源事件有序）
@@ -101,7 +98,9 @@ func (d *Dispatcher) worker(ctx context.Context) {
 	}
 }
 
-// dispatch 派发一批：按事件命中的 sink 分组投递，全部确认后推进位点
+// dispatch 派发一批：按事件命中的 sink 分组投递，全部确认后才推进位点。
+// block 语义：任一 sink 持续失败 → 本函数阻塞重试（worker 不消费下一批，位点不推进），
+// 直到成功或停机（ctx 取消后由重启流程从 lastAckedPos 重放，保 at-least-once）。
 func (d *Dispatcher) dispatch(ctx context.Context, b *Batch) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -122,69 +121,54 @@ func (d *Dispatcher) dispatch(ctx context.Context, b *Batch) {
 		for i, e := range evs {
 			events[i] = e.ChangeEvent
 		}
-		sk, ok := d.sinks.Get(sinkName)
-		if !ok {
-			// sink 被删除/禁用：block 策略下阻塞并告警（保不丢）；dlq 策略写死信
-			d.log.Error("sink missing, batch blocked", "sink", sinkName)
-			d.retryForever(ctx, sinkName, events)
-			continue
-		}
-		if err := d.sendWithRetry(ctx, sk, events); err != nil {
-			d.log.Error("sink exhausted, batch blocked", "sink", sinkName, "err", err)
-			d.retryForever(ctx, sinkName, events)
+		if !d.deliverBlocking(ctx, sinkName, events) {
+			// 停机中断：不推进位点，重启后从 lastAckedPos 重放本批
+			return
 		}
 	}
 	d.ackPos(b)
 }
 
-// sendWithRetry 指数退避重试投递；重试耗尽返回错误
-func (d *Dispatcher) sendWithRetry(ctx context.Context, sk sink.Sink, events []*model.ChangeEvent) error {
+// deliverBlocking 向单个 sink 投递直至成功；返回 false 表示被停机中断。
+// 有限次重试（指数退避）→ 仍失败则进入无限慢速重试（5s→60s 封顶），
+// 整个过程阻塞调用方（背压源头），期间打告警日志。
+func (d *Dispatcher) deliverBlocking(ctx context.Context, sinkName string, events []*model.ChangeEvent) bool {
+	// 快速重试阶段
 	backoff := time.Second
-	const maxBackoff = 60 * time.Second
-	var lastErr error
-	for i := 0; i < 10; i++ {
-		if err := sk.SendBatch(ctx, events); err == nil {
-			return nil
-		} else {
-			lastErr = err
+	for i := 0; i < 5; i++ {
+		sk, ok := d.sinks.Get(sinkName)
+		if !ok {
+			d.log.Error("sink missing, retrying", "sink", sinkName)
+		} else if err := sk.SendBatch(ctx, events); err == nil {
+			return true
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false
 		case <-time.After(backoff):
 		}
 		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
+	}
+	// 无限阻塞重试（block 策略）
+	d.log.Error("sink exhausted, entering blocking retry (position will NOT advance)", "sink", sinkName)
+	slowBackoff := 5 * time.Second
+	for {
+		sk, ok := d.sinks.Get(sinkName)
+		if !ok {
+			d.log.Error("sink still missing", "sink", sinkName)
+		} else if err := sk.SendBatch(ctx, events); err == nil {
+			d.log.Info("blocked batch finally delivered, resuming", "sink", sinkName)
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(slowBackoff):
+		}
+		if slowBackoff < 60*time.Second {
+			slowBackoff *= 2
 		}
 	}
-	return fmt.Errorf("send batch after retries: %w", lastErr)
-}
-
-// retryForever block 策略：无限重试直到成功或停机（保 at-least-once）
-func (d *Dispatcher) retryForever(ctx context.Context, sinkName string, events []*model.ChangeEvent) {
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		backoff := 5 * time.Second
-		for {
-			sk, ok := d.sinks.Get(sinkName)
-			if !ok {
-				d.log.Error("sink still missing", "sink", sinkName)
-			} else if err := sk.SendBatch(ctx, events); err == nil {
-				d.log.Info("blocked batch finally delivered", "sink", sinkName)
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(backoff):
-			}
-			if backoff < 60*time.Second {
-				backoff *= 2
-			}
-		}
-	}()
 }
 
 // ackPos 批次全部确认：推进内存位点并触发落盘
