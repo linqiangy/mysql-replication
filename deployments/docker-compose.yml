@@ -1,0 +1,32 @@
+services:
+  # 元数据库 + 演示被监听库（同实例两个角色，生产建议分开）
+  mysql-meta:
+    image: mysql:8.4
+    container_name: bincat-mysql
+    command:
+      - --server-id=1
+      - --log_bin=mysql-bin
+      - --binlog_format=ROW
+      - --binlog_row_image=FULL
+      - --binlog_row_metadata=FULL
+      - --gtid_mode=ON
+      - --enforce_gtid_consistency=ON
+      - --binlog_expire_logs_seconds=864000
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: bincat_meta
+      MYSQL_USER: bincat
+      MYSQL_PASSWORD: bincat123
+    ports:
+      - "33061:3306"
+    volumes:
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+      - mysql-meta-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot123"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  mysql-meta-data:
