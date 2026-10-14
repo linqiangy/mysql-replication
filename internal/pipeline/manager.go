@@ -12,6 +12,7 @@ import (
 	"bincat/internal/checkpoint"
 	"bincat/internal/config"
 	"bincat/internal/meta"
+	"bincat/internal/observability"
 	"bincat/internal/sink"
 )
 
@@ -140,7 +141,7 @@ func (m *PipelineManager) startPipeline(ctx context.Context, ds *meta.DataSource
 	if err != nil {
 		return fmt.Errorf("compile rules: %w", err)
 	}
-	disp := NewDispatcher(ds.ID, m.defaults.DispatchQueueSize, m.defaults.AckWindowSize,
+	disp := NewDispatcher(ds.ID, ds.Name, m.defaults.DispatchQueueSize, m.defaults.AckWindowSize,
 		m.sinkPool, m.cpStore, m.defaults.CheckpointFlushInterval, m.log.With("datasource", ds.Name))
 
 	p := &Pipeline{
@@ -159,6 +160,7 @@ func (m *PipelineManager) startPipeline(ctx context.Context, ds *meta.DataSource
 	m.pipelines[ds.ID] = p
 	m.mu.Unlock()
 	go m.runLoop(p, pctx)
+	observability.M().PipelineUp.WithLabelValues(ds.Name).Set(1)
 	m.log.Info("pipeline started", "datasource", ds.Name, "server_id", ds.ServerID)
 	return nil
 }
@@ -216,6 +218,7 @@ func (m *PipelineManager) runLoop(p *Pipeline, ctx context.Context) {
 			return
 		default:
 		}
+		observability.M().Reconnects.WithLabelValues(p.ds.Name).Inc()
 		p.log.Error("pipeline exited, restarting", "err", err, "backoff", backoff)
 		select {
 		case <-ctx.Done():

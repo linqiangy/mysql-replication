@@ -11,7 +11,10 @@ import (
 	"github.com/go-mysql-org/go-mysql/replication"
 
 	"bincat/internal/model"
+	"bincat/internal/observability"
 )
+
+var metrics = observability.M()
 
 // binlogHandler 实现 canal.EventHandler：过滤 → 封装 ChangeEvent → 批次缓冲。
 // 每个 pipeline（数据源）一个实例；canal 事件循环单线程回调，无并发。
@@ -40,7 +43,11 @@ func (h *binlogHandler) OnRow(e *canal.RowsEvent) error {
 		return h.handleTxOverflow()
 	}
 	before, after := extractRows(e, action)
-	for _, m := range h.engine.Match(e.Table.Schema, e.Table.Name, action, before, after) {
+	matches := h.engine.Match(e.Table.Schema, e.Table.Name, action, before, after)
+	if len(matches) == 0 {
+		metrics.FilteredTotal.WithLabelValues(h.dsName, "", "table").Inc()
+	}
+	for _, m := range matches {
 		h.txEvents = append(h.txEvents, h.buildSinkEvent(e, action, m, before, after))
 	}
 	return nil
@@ -97,6 +104,13 @@ func (h *binlogHandler) buildSinkEvent(e *canal.RowsEvent, action string, m Matc
 // OnXID 事务提交：封批交给 dispatcher（空批直接推进位点）
 func (h *binlogHandler) OnXID(header *replication.EventHeader, nextPos mysql.Position) error {
 	defer h.recoverPanic("OnXID")
+	// binlog 延迟指标：事件时间戳 vs 本地时间
+	if header.Timestamp > 0 {
+		metrics.BinlogDelay.WithLabelValues(h.dsName).Set(float64(time.Now().Unix() - int64(header.Timestamp)))
+	}
+	for _, ev := range h.txEvents {
+		metrics.EventsTotal.WithLabelValues(h.dsName, ev.Schema, ev.Table, ev.Action).Inc()
+	}
 	if len(h.txEvents) > 0 {
 		h.disp.Enqueue(Batch{
 			EndPos:  Position{Name: nextPos.Name, Pos: nextPos.Pos},

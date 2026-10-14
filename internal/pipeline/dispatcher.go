@@ -9,6 +9,7 @@ import (
 
 	"bincat/internal/checkpoint"
 	"bincat/internal/model"
+	"bincat/internal/observability"
 	"bincat/internal/sink"
 )
 
@@ -42,6 +43,7 @@ type Dispatcher struct {
 	sinks   *sink.Pool
 	cpStore checkpoint.Store
 	dsID    int64
+	dsName  string
 	log     *slog.Logger
 
 	mu           sync.Mutex
@@ -55,7 +57,7 @@ type Dispatcher struct {
 }
 
 // NewDispatcher 构造并启动 worker；queueSize 为待派发队列长度
-func NewDispatcher(dsID int64, queueSize, window int, sinks *sink.Pool, cpStore checkpoint.Store,
+func NewDispatcher(dsID int64, dsName string, queueSize, window int, sinks *sink.Pool, cpStore checkpoint.Store,
 	flushInterval time.Duration, log *slog.Logger) *Dispatcher {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &Dispatcher{
@@ -64,6 +66,7 @@ func NewDispatcher(dsID int64, queueSize, window int, sinks *sink.Pool, cpStore 
 		sinks:   sinks,
 		cpStore: cpStore,
 		dsID:    dsID,
+		dsName:  dsName,
 		log:     log,
 		cancel:  cancel,
 		flushCh: make(chan struct{}, 1),
@@ -133,14 +136,21 @@ func (d *Dispatcher) dispatch(ctx context.Context, b *Batch) {
 // 有限次重试（指数退避）→ 仍失败则进入无限慢速重试（5s→60s 封顶），
 // 整个过程阻塞调用方（背压源头），期间打告警日志。
 func (d *Dispatcher) deliverBlocking(ctx context.Context, sinkName string, events []*model.ChangeEvent) bool {
+	obs := observability.M()
 	// 快速重试阶段
 	backoff := time.Second
 	for i := 0; i < 5; i++ {
 		sk, ok := d.sinks.Get(sinkName)
 		if !ok {
 			d.log.Error("sink missing, retrying", "sink", sinkName)
-		} else if err := sk.SendBatch(ctx, events); err == nil {
-			return true
+		} else {
+			start := time.Now()
+			err := sk.SendBatch(ctx, events)
+			obs.SinkSendDuration.WithLabelValues(sinkName).Observe(time.Since(start).Seconds())
+			if err == nil {
+				obs.SinkBatches.WithLabelValues(d.dsName, sinkName, "ack").Inc()
+				return true
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -150,15 +160,22 @@ func (d *Dispatcher) deliverBlocking(ctx context.Context, sinkName string, event
 		backoff *= 2
 	}
 	// 无限阻塞重试（block 策略）
+	obs.SinkBatches.WithLabelValues(d.dsName, sinkName, "exhausted").Inc()
 	d.log.Error("sink exhausted, entering blocking retry (position will NOT advance)", "sink", sinkName)
 	slowBackoff := 5 * time.Second
 	for {
 		sk, ok := d.sinks.Get(sinkName)
 		if !ok {
 			d.log.Error("sink still missing", "sink", sinkName)
-		} else if err := sk.SendBatch(ctx, events); err == nil {
-			d.log.Info("blocked batch finally delivered, resuming", "sink", sinkName)
-			return true
+		} else {
+			start := time.Now()
+			err := sk.SendBatch(ctx, events)
+			obs.SinkSendDuration.WithLabelValues(sinkName).Observe(time.Since(start).Seconds())
+			if err == nil {
+				obs.SinkBatches.WithLabelValues(d.dsName, sinkName, "ack").Inc()
+				d.log.Info("blocked batch finally delivered, resuming", "sink", sinkName)
+				return true
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -223,7 +240,9 @@ func (d *Dispatcher) flushOnce(ctx context.Context) {
 		d.mu.Lock()
 		d.dirty = true // 落盘失败恢复脏标记，下轮重试
 		d.mu.Unlock()
+		return
 	}
+	observability.M().CheckpointPos.WithLabelValues(d.dsName).Set(float64(pos.BinlogPos))
 }
 
 // LastAcked 当前已确认位点（监控用）
