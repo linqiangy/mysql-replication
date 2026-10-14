@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bincat 控制台</title>
+<link rel="stylesheet" href="https://unpkg.com/element-plus/dist/index.css">
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<script src="https://unpkg.com/element-plus"></script>
+<script src="https://unpkg.com/element-plus/dist/locale/zh-cn"></script>
+<script src="https://unpkg.com/@element-plus/icons-vue"></script>
+<style>
+body { margin: 0; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fa; }
+.layout { display: flex; min-height: 100vh; }
+.side { width: 220px; background: #1d2939; color: #fff; padding: 0; }
+.side .logo { height: 60px; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; letter-spacing: 2px; }
+.side .menu { border-right: none; }
+.main { flex: 1; display: flex; flex-direction: column; }
+.header { height: 60px; background: #fff; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; box-shadow: 0 1px 4px rgba(0,21,41,.08); }
+.content { padding: 24px; }
+.card { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+.stat { display: flex; gap: 16px; }
+.stat .item { flex: 1; background: #fff; border-radius: 8px; padding: 16px 20px; }
+.stat .num { font-size: 28px; font-weight: 600; }
+.stat .label { color: #909399; font-size: 13px; margin-top: 4px; }
+.mono { font-family: SFMono-Regular, Consolas, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const { createApp, ref, reactive, computed, onMounted, watch } = Vue;
+const { ElMessage, ElMessageBox } = ElementPlus;
+
+// ---------- API ----------
+const TOKEN = () => localStorage.getItem('token') || '';
+async function api(method, url, body) {
+  const opt = { method, headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN() } };
+  if (body) opt.body = JSON.stringify(body);
+  const res = await fetch('/api/v1' + url, opt);
+  if (res.status === 401) { localStorage.removeItem('token'); location.reload(); throw new Error('未登录'); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+// ---------- 登录 ----------
+const Login = {
+  template: `
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#1d2939">
+    <el-card style="width:380px">
+      <h2 style="text-align:center;margin-top:0">🐱 bincat</h2>
+      <p style="text-align:center;color:#909399;margin-bottom:24px">MySQL Binlog 变更监听控制台</p>
+      <el-form @submit.prevent="doLogin">
+        <el-form-item><el-input v-model="username" placeholder="用户名" size="large" @keyup.enter="doLogin"/></el-form-item>
+        <el-form-item><el-input v-model="password" type="password" placeholder="密码" size="large" show-password @keyup.enter="doLogin"/></el-form-item>
+        <el-button type="primary" size="large" style="width:100%" :loading="loading" @click="doLogin">登 录</el-button>
+      </el-form>
+    </el-card>
+  </div>`,
+  setup() {
+    const username = ref(''), password = ref(''), loading = ref(false);
+    const doLogin = async () => {
+      loading.value = true;
+      try {
+        const r = await api('POST', '/login', { username: username.value, password: password.value });
+        localStorage.setItem('token', r.token);
+        localStorage.setItem('role', r.role);
+        localStorage.setItem('username', r.username);
+        location.reload();
+      } catch (e) { ElMessage.error(e.message); }
+      loading.value = false;
+    };
+    return { username, password, loading, doLogin };
+  }
+};
+
+// ---------- 主布局 ----------
+const Layout = {
+  components: { Dashboard, Rules, Sinks, Datasources, Users, Checkpoints, Audit },
+  template: `
+  <div class="layout">
+    <div class="side">
+      <div class="logo">🐱 bincat</div>
+      <el-menu :default-active="page" class="menu" background-color="#1d2939" text-color="#bfcbd9" active-text-color="#409EFF" @select="p=>page=p">
+        <el-menu-item index="dashboard"><el-icon><monitor/></el-icon>监控面板</el-menu-item>
+        <el-menu-item index="rules"><el-icon><filter/></el-icon>监听规则</el-menu-item>
+        <el-menu-item index="datasources" v-if="role==='admin'"><el-icon><coin/></el-icon>数据源</el-menu-item>
+        <el-menu-item index="sinks" v-if="role==='admin'"><el-icon><promotion/></el-icon>投递目标</el-menu-item>
+        <el-menu-item index="users" v-if="role==='admin'"><el-icon><user/></el-icon>用户管理</el-menu-item>
+        <el-menu-item index="checkpoints" v-if="role==='admin'"><el-icon><loc/></el-icon>位点管理</el-menu-item>
+        <el-menu-item index="audit" v-if="role==='admin'"><el-icon><list/></el-icon>审计日志</el-menu-item>
+      </el-menu>
+    </div>
+    <div class="main">
+      <div class="header">
+        <span style="font-size:16px;font-weight:600">{{ title }}</span>
+        <div>
+          <span style="margin-right:12px;color:#606266">{{ username }}（{{ role }}）</span>
+          <el-button size="small" @click="changePwdVisible=true">改密码</el-button>
+          <el-button size="small" type="danger" plain @click="logout">退出</el-button>
+        </div>
+      </div>
+      <div class="content"><component :is="page"/></div>
+    </div>
+    <el-dialog v-model="changePwdVisible" title="修改我的密码" width="400px">
+      <el-form label-width="80px">
+        <el-form-item label="原密码"><el-input v-model="pw.old" type="password" show-password/></el-form-item>
+        <el-form-item label="新密码"><el-input v-model="pw.now" type="password" show-password/></el-form-item>
+      </el-form>
+      <template #footer><el-button type="primary" @click="changePwd">确定</el-button></template>
+    </el-dialog>
+  </div>`,
+  setup() {
+    const page = ref('dashboard');
+    const role = ref(localStorage.getItem('role') || 'user');
+    const username = ref(localStorage.getItem('username') || '');
+    const changePwdVisible = ref(false);
+    const pw = reactive({ old: '', now: '' });
+    const titles = { dashboard: '监控面板', rules: '监听规则', datasources: '数据源', sinks: '投递目标', users: '用户管理', checkpoints: '位点管理', audit: '审计日志' };
+    const title = computed(() => titles[page.value] || '');
+    const logout = () => { localStorage.clear(); location.reload(); };
+    const changePwd = async () => {
+      try {
+        await api('PUT', '/me/password', { old_password: pw.old, new_password: pw.now });
+        ElMessage.success('已修改'); changePwdVisible.value = false; pw.old = pw.now = '';
+      } catch (e) { ElMessage.error(e.message); }
+    };
+    return { page, role, username, title, logout, changePwdVisible, pw, changePwd };
+  }
+};
+
+// ---------- 监控面板 ----------
+const Dashboard = {
+  template: `
+  <div>
+    <div class="stat" v-if="rows.length">
+      <div class="item" v-for="r in rows" :key="r.datasource">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <b>{{ r.datasource }}</b>
+          <el-tag :type="r.up ? 'success' : 'danger'" size="small">{{ r.up ? '运行中' : '已停止' }}</el-tag>
+        </div>
+        <div style="margin-top:10px;color:#606266;font-size:13px">
+          位点：<span class="mono">{{ r.last_acked_file }}:{{ r.last_acked_pos }}</span>
+        </div>
+      </div>
+    </div>
+    <el-empty v-else description="暂无运行中的数据源"/>
+  </div>`,
+  setup() {
+    const rows = ref([]);
+    const load = async () => { try { rows.value = await api('GET', '/status'); } catch(e){} };
+    onMounted(load);
+    const t = setInterval(load, 5000);
+    return { rows };
+  }
+};
+
+// ---------- 监听规则 ----------
+const Rules = {
+  template: `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;margin-bottom:16px">
+      <b>规则列表{{ role==='user' ? '（仅显示我的）' : '' }}</b>
+      <el-button type="primary" @click="openDlg()">新建规则</el-button>
+    </div>
+    <el-table :data="rows" border size="default">
+      <el-table-column prop="name" label="名称" width="140"/>
+      <el-table-column prop="datasource_id" label="数据源ID" width="90"/>
+      <el-table-column prop="schema" label="库" width="100"/>
+      <el-table-column prop="table_pattern" label="表（通配）" width="120"/>
+      <el-table-column label="操作" width="160"><template #default="{row}">
+        <el-tag v-for="a in row.actions" :key="a" size="small" style="margin-right:4px">{{ a }}</el-tag>
+      </template></el-table-column>
+      <el-table-column label="watch 字段"><template #default="{row}">
+        <span v-if="row.watch_fields && row.watch_fields.length">{{ row.watch_fields.join(', ') }}</span>
+        <span v-else style="color:#909399">全部变更触发</span>
+      </template></el-table-column>
+      <el-table-column prop="sink_id" label="Sink ID" width="80"/>
+      <el-table-column label="状态" width="70"><template #default="{row}">
+        <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+      </template></el-table-column>
+      <el-table-column label="操作" width="130"><template #default="{row}">
+        <el-button link type="primary" size="small" @click="openDlg(row)">编辑</el-button>
+        <el-popconfirm title="确认删除？" @confirm="del(row)"><template #reference>
+          <el-button link type="danger" size="small">删除</el-button>
+        </template></el-popconfirm>
+      </template></el-table-column>
+    </el-table>
+
+    <el-dialog v-model="dlg" :title="form.id ? '编辑规则' : '新建规则'" width="620px">
+      <el-form label-width="100px">
+        <el-form-item label="数据源">
+          <el-select v-model="form.datasource_id" placeholder="选择数据源" style="width:100%" @change="loadSchemas">
+            <el-option v-for="d in dss" :key="d.id" :label="d.name + ' (' + d.host + ')'" :value="d.id"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="名称"><el-input v-model="form.name" placeholder="如 orders-status"/></el-form-item>
+        <el-form-item label="库">
+          <el-select v-model="form.schema" filterable allow-create placeholder="选择或输入库名" style="width:100%" @change="loadTables">
+            <el-option v-for="s in schemas" :key="s" :label="s" :value="s"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="表">
+          <el-select v-model="form.table_pattern" filterable allow-create placeholder="选择表或输入通配（orders_*）" style="width:100%" @change="loadColumns">
+            <el-option v-for="t in tables" :key="t" :label="t" :value="t"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="监听操作">
+          <el-checkbox-group v-model="form.actions">
+            <el-checkbox value="insert">insert</el-checkbox>
+            <el-checkbox value="update">update</el-checkbox>
+            <el-checkbox value="delete">delete</el-checkbox>
+          </el-checkbox-group>
+        </el-form-item>
+        <el-form-item label="watch 字段">
+          <el-select v-model="form.watch_fields" multiple filterable allow-create placeholder="留空=任意变更触发（仅 update 生效）" style="width:100%">
+            <el-option v-for="c in columns" :key="c.name" :label="c.name + (c.key==='PRI' ? ' (主键)' : '')" :value="c.name"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="投递目标">
+          <el-select v-model="form.sink_id" placeholder="选择 sink" style="width:100%">
+            <el-option v-for="s in sinks" :key="s.id" :label="s.name + ' (' + s.type + ')'" :value="s.id" :disabled="!s.enabled"/>
+          </el-select>
+        </el-form-item>
+        <el-form-item label="启用"><el-switch v-model="form.enabled"/></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dlg=false">取消</el-button>
+        <el-button type="primary" @click="save">保存（热生效）</el-button>
+      </template>
+    </el-dialog>
+  </div>`,
+  setup() {
+    const rows = ref([]), dss = ref([]), sinks = ref([]);
+    const schemas = ref([]), tables = ref([]), columns = ref([]);
+    const dlg = ref(false);
+    const role = ref(localStorage.getItem('role') || 'user');
+    const empty = { id: 0, datasource_id: null, name: '', schema: '', table_pattern: '', actions: ['update'], watch_fields: [], sink_id: null, enabled: true };
+    const form = reactive({ ...empty });
+    const load = async () => {
+      rows.value = await api('GET', '/rules');
+      dss.value = await api('GET', '/datasources');
+      sinks.value = await api('GET', '/sinks');
+    };
+    const loadSchemas = async () => { if (form.datasource_id) schemas.value = await api('GET', '/datasources/' + form.datasource_id + '/schemas'); };
+    const loadTables = async () => { if (form.datasource_id && form.schema) tables.value = await api('GET', '/datasources/' + form.datasource_id + '/tables?schema=' + encodeURIComponent(form.schema)); };
+    const loadColumns = async () => { if (form.datasource_id && form.schema && form.table_pattern && !form.table_pattern.includes('*')) columns.value = await api('GET', '/datasources/' + form.datasource_id + '/columns?schema=' + encodeURIComponent(form.schema) + '&table=' + encodeURIComponent(form.table_pattern)); };
+    const openDlg = (row) => {
+      Object.assign(form, empty, row || {});
+      if (row) { loadSchemas(); loadTables(); if (!row.table_pattern.includes('*')) loadColumns(); }
+      dlg.value = true;
+    };
+    const save = async () => {
+      try {
+        if (form.id) await api('PUT', '/rules/' + form.id, form);
+        else await api('POST', '/rules', form);
+        ElMessage.success('已保存，热生效'); dlg.value = false; load();
+      } catch (e) { ElMessage.error(e.message); }
+    };
+    const del = async (row) => {
+      try { await api('DELETE', '/rules/' + row.id); ElMessage.success('已删除'); load(); }
+      catch (e) { ElMessage.error(e.message); }
+    };
+    onMounted(load);
+    return { rows, dss, sinks, schemas, tables, columns, dlg, form, role, openDlg, save, del, loadSchemas, loadTables, loadColumns };
+  }
+};
+
+// ---------- 数据源 ----------
+const Datasources = {
+  template: `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;margin-bottom:16px">
+      <b>数据源（admin）</b>
+      <el-button type="primary" @click="openDlg()">新建数据源</el-button>
+    </div>
+    <el-table :data="rows" border>
+      <el-table-column prop="name" label="名称" width="140"/>
+      <el-table-column label="地址"><template #default="{row}">{{ row.host }}:{{ row.port }}</template></el-table-column>
+      <el-table-column prop="user" label="账号" width="120"/>
+      <el-table-column prop="server_id" label="server_id" width="90"/>
+      <el-table-column label="GTID" width="70"><template #default="{row}">{{ row.gtid_mode ? '开' : '关' }}</template></el-table-column>
+      <el-table-column label="状态" width="70"><template #default="{row}">
+        <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+      </template></el-table-column>
+      <el-table-column label="操作" width="200"><template #default="{row}">
+        <el-button link type="success" size="small" @click="test(row)">测试</el-button>
+        <el-button link type="primary" size="small" @click="openDlg(row)">编辑</el-button>
+        <el-popconfirm title="确认删除？" @confirm="del(row)"><template #reference>
+          <el-button link type="danger" size="small">删除</el-button>
+        </template></el-popconfirm>
+      </template></el-table-column>
+    </el-table>
+
+    <el-dialog v-model="dlg" :title="form.id ? '编辑数据源' : '新建数据源'" width="520px">
+      <el-form label-width="100px">
+        <el-form-item label="名称"><el-input v-model="form.name" placeholder="如 order-db"/></el-form-item>
+        <el-form-item label="主机"><el-input v-model="form.host"/></el-form-item>
+        <el-form-item label="端口"><el-input-number v-model="form.port" :min="1" :max="65535"/></el-form-item>
+        <el-form-item label="账号"><el-input v-model="form.user" placeholder="需 REPLICATION SLAVE/CLIENT + SELECT 权限"/></el-form-item>
+        <el-form-item label="密码"><el-input v-model="form.password" type="password" show-password :placeholder="form.id ? '留空不修改' : ''"/></el-form-item>
+        <el-form-item label="server_id"><el-input-number v-model="form.server_id" :min="1"/><span style="margin-left:8px;color:#909399;font-size:12px">目标 MySQL 集群内唯一</span></el-form-item>
+        <el-form-item label="GTID 模式"><el-switch v-model="form.gtid_mode"/></el-form-item>
+        <el-form-item label="启用"><el-switch v-model="form.enabled"/></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dlg=false">取消</el-button>
+        <el-button type="primary" @click="save">保存（热生效）</el-button>
+      </template>
+    </el-dialog>
+  </div>`,
+  setup() {
+    const rows = ref([]), dlg = ref(false);
+    const empty = { id: 0, name: '', host: '127.0.0.1', port: 3306, user: '', password: '', server_id: 1001, gtid_mode: true, enabled: true };
+    const form = reactive({ ...empty });
+    const load = async () => rows.value = await api('GET', '/datasources');
+    const openDlg = (row) => { Object.assign(form, empty); if (row) { Object.assign(form, row); form.password = ''; } dlg.value = true; };
+    const save = async () => {
+      try {
+        const body = { ...form };
+        if (form.id && !form.password) delete body.password;
+        if (form.id) await api('PUT', '/datasources/' + form.id, body);
+        else await api('POST', '/datasources', body);
+        ElMessage.success('已保存'); dlg.value = false; load();
+      } catch (e) { ElMessage.error(e.message); }
+    };
+    const del = async (row) => {
+      try { await api('DELETE', '/datasources/' + row.id); ElMessage.success('已删除'); load(); }
+      catch (e) { ElMessage.error(e.message); }
+    };
+    const test = async (row) => {
+      ElMessage.info('测试中...');
+      try {
+        const r = await api('POST', '/datasources/' + row.id + '/test');
+        if (r.ok) ElMessage.success('连接正常'); else ElMessage.error('检查失败：' + r.error);
+      } catch (e) { ElMessage.error(e.message); }
+    };
+    onMounted(load);
+    return { rows, dlg, form, openDlg, save, del, test };
+  }
+};
+
+// ---------- Sink ----------
+const Sinks = {
+  template: `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;margin-bottom:16px">
+      <b>投递目标（admin）</b>
+      <el-button type="primary" @click="openDlg()">新建 Sink</el-button>
+    </div>
+    <el-table :data="rows" border>
+      <el-table-column prop="name" label="名称" width="150"/>
+      <el-table-column prop="type" label="类型" width="100">
+        <template #default="{row}"><el-tag size="small">{{ row.type }}</el-tag></template>
+      </el-table-column>
+      <el-table-column label="配置"><template #default="{row}">
+        <span class="mono">{{ brief(row) }}</span>
+      </template></el-table-column>
+      <el-table-column label="状态" width="70"><template #default="{row}">
+        <el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? '启用' : '停用' }}</el-tag>
+      </template></el-table-column>
+      <el-table-column label="操作" width="200"><template #default="{row}">
+        <el-button link type="success" size="small" @click="test(row)">测试</el-button>
+        <el-button link type="primary" size="small" @click="openDlg(row)">编辑</el-button>
+        <el-popconfirm title="确认删除？" @confirm="del(row)"><template #reference>
+          <el-button link type="danger" size="small">删除</el-button>
+        </template></el-popconfirm>
+      </template></el-table-column>
+    </el-table>
+
+    <el-dialog v-model="dlg" :title="form.id ? '编辑 Sink' : '新建 Sink'" width="640px">
+      <el-form label-width="110px">
+        <el-form-item label="名称"><el-input v-model="form.name" placeholder="如 kafka-orders"/></el-form-item>
+        <el-form-item label="类型">
+          <el-radio-group v-model="form.type">
+            <el-radio-button value="console">console</el-radio-button>
+            <el-radio-button value="http">http</el-radio-button>
+            <el-radio-button value="kafka">kafka</el-radio-button>
+            <el-radio-button value="rabbitmq">rabbitmq</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <template v-if="form.type==='http'">
+          <el-form-item label="URL"><el-input v-model="form.params.url" placeholder="http://host/hook"/></el-form-item>
+          <el-form-item label="超时(秒)"><el-input-number v-model="form.params.timeout_seconds" :min="1"/></el-form-item>
+        </template>
+        <template v-if="form.type==='kafka'">
+          <el-form-item label="brokers"><el-input v-model="form.params._brokers" placeholder="kafka1:9092,kafka2:9092"/></el-form-item>
+          <el-form-item label="topic"><el-input v-model="form.params.topic" placeholder="order-changes 或 {{schema}}_{{table}}"/></el-form-item>
+          <el-form-item label="acks"><el-select v-model="form.params.ack"><el-option value="all"/><el-option value="one"/><el-option value="none"/></el-select></el-form-item>
+        </template>
+        <template v-if="form.type==='rabbitmq'">
+          <el-form-item label="URL"><el-input v-model="form.params.url" placeholder="amqp://user:pass@host:5672/"/></el-form-item>
+          <el-form-item label="exchange"><el-input v-model="form.params.exchange"/></el-form-item>
+          <el-form-item label="routing_key"><el-input v-model="form.params.routing_key" placeholder="bincat.{{schema}}.{{table}}.{{action}}"/></el-form-item>
+        </template>
+        <el-form-item label="启用"><el-switch v-model="form.enabled"/></el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dlg=false">取消</el-button>
+        <el-button type="primary" @click="save">保存（热生效）</el-button>
+      </template>
+    </el-dialog>
+  </div>`,
+  setup() {
+    const rows = ref([]), dlg = ref(false);
+    const mkParams = (type) => type === 'http' ? { url: '', timeout_seconds: 5 }
+      : type === 'kafka' ? { _brokers: '', topic: '', ack: 'all' }
+      : type === 'rabbitmq' ? { url: '', exchange: '', routing_key: 'bincat.{{schema}}.{{table}}.{{action}}' }
+      : {};
+    const empty = () => ({ id: 0, name: '', type: 'console', params: mkParams('console'), enabled: true });
+    const form = reactive(empty());
+    const load = async () => rows.value = await api('GET', '/sinks');
+    const openDlg = (row) => {
+      Object.assign(form, empty());
+      if (row) {
+        Object.assign(form, JSON.parse(JSON.stringify(row)));
+        if (row.type === 'kafka') form.params._brokers = (row.params.brokers || []).join(',');
+      }
+      dlg.value = true;
+    };
+    watch(() => form.type, (t) => { form.params = mkParams(t); });
+    const brief = (r) => {
+      if (r.type === 'kafka') return (r.params.brokers || []).join(',') + ' → ' + r.params.topic;
+      if (r.type === 'http') return r.params.url;
+      if (r.type === 'rabbitmq') return r.params.exchange + ' / ' + (r.params.routing_key || '');
+      return 'stdout';
+    };
+    const save = async () => {
+      try {
+        const body = JSON.parse(JSON.stringify(form));
+        if (body.type === 'kafka') {
+          body.params.brokers = (body.params._brokers || '').split(',').map(s => s.trim()).filter(Boolean);
+          delete body.params._brokers;
+        }
+        if (form.id) await api('PUT', '/sinks/' + form.id, body);
+        else await api('POST', '/sinks', body);
+        ElMessage.success('已保存'); dlg.value = false; load();
+      } catch (e) { ElMessage.error(e.message); }
+    };
+    const del = async (row) => {
+      try { await api('DELETE', '/sinks/' + row.id); ElMessage.success('已删除'); load(); }
+      catch (e) { ElMessage.error(e.message); }
+    };
+    const test = async (row) => {
+      try {
+        const r = await api('POST', '/sinks/' + row.id + '/test');
+        if (r.ok) ElMessage.success('连通正常'); else ElMessage.error('失败：' + (r.error || ''));
+      } catch (e) { ElMessage.error(e.message); }
+    };
+    onMounted(load);
+    return { rows, dlg, form, openDlg, save, del, test, brief };
+  }
+};
+
+// ---------- 用户 ----------
+const Users = {
+  template: `
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;margin-bottom:16px">
+      <b>用户管理（admin）</b>
+      <el-button type="primary" @click="dlg=true">新建用户</el-button>
+    </div>
+    <el-table :data="rows" border>
+      <el-table-column prop="username" label="用户名"/>
+      <el-table-column prop="role" label="角色" width="100"><template #default="{row}">
+        <el-tag :type="row.role==='admin' ? 'warning' : ''" size="small">{{ row.role }}</el-tag>
+      </template></el-table-column>
+      <el-table-column label="状态" width="80"><template #default="{row}">
+        <el-tag :type="row.enabled ? 'success' : 'danger'" size="small">{{ row.enabled ? '正常' : '禁用' }}</el-tag>
+      </template></el-table-column>
+      <el-table-column label="操作" width="200"><template #default="{row}">
+        <el-button link type="primary" size="small" @click="resetPwd(row)">重置密码</el-button>
+        <el-button link :type="row.enabled ? 'danger' : 'success'" size="small" @click="toggle(row)">{{ row.enabled ? '禁用' : '启用' }}</el-button>
+      </template></el-table-column>
+    </el-table>
+    <el-dialog v-model="dlg" title="新建用户" width="420px">
+      <el-form label-width="80px">
+        <el-form-item label="用户名"><el-input v-model="form.username"/></el-form-item>
+        <el-form-item label="密码"><el-input v-model="form.password" type="password" show-password/></el-form-item>
+        <el-form-item label="角色"><el-select v-model="form.role"><el-option value="user"/><el-option value="admin"/></el-select></el-form-item>
+      </el-form>
+      <template #footer><el-button type="primary" @click="save">创建</el-button></template>
+    </el-dialog>
+  </div>`,
+  setup() {
+    const rows = ref([]), dlg = ref(false);
+    const form = reactive({ username: '', password: '', role: 'user' });
+    const load = async () => rows.value = await api('GET', '/users');
+    const save = async () => {
+      try { await api('POST', '/users', form); ElMessage.success('已创建'); dlg.value = false; form.username = form.password = ''; load(); }
+      catch (e) { ElMessage.error(e.message); }
+    };
+    const resetPwd = async (row) => {
+      try {
+        const { value } = await ElMessageBox.prompt('输入 ' + row.username + ' 的新密码', '重置密码', { inputType: 'password' });
+        await api('PUT', '/users/' + row.id + '/password', { password: value });
+        ElMessage.success('已重置');
+      } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || String(e)); }
+    };
+    const toggle = async (row) => {
+      await api('PUT', '/users/' + row.id + '/enabled', { enabled: !row.enabled });
+      load();
+    };
+    onMounted(load);
+    return { rows, dlg, form, save, resetPwd, toggle };
+  }
+};
+
+// ---------- 位点 ----------
+const Checkpoints = {
+  template: `
+  <div class="card">
+    <b>位点管理（admin）</b>
+    <el-table :data="rows" border style="margin-top:16px">
+      <el-table-column prop="datasource" label="数据源" width="140"/>
+      <el-table-column label="binlog 位点"><template #default="{row}">
+        <span class="mono">{{ row.binlog_file }}:{{ row.binlog_pos }}</span>
+      </template></el-table-column>
+      <el-table-column prop="gtid_set" label="GTID set"/>
+      <el-table-column prop="updated_at" label="更新时间" width="180"/>
+      <el-table-column label="操作" width="100"><template #default="{row}">
+        <el-popconfirm title="重置将跳到当前 master 位点，期间变更将丢失！确认？" width="260" @confirm="reset(row)">
+          <template #reference><el-button link type="danger" size="small">重置</el-button></template>
+        </el-popconfirm>
+      </template></el-table-column>
+    </el-table>
+  </div>`,
+  setup() {
+    const rows = ref([]);
+    const load = async () => rows.value = await api('GET', '/checkpoints');
+    const reset = async (row) => {
+      await api('PUT', '/checkpoints/' + row.datasource_id + '/reset');
+      ElMessage.success('已重置'); load();
+    };
+    onMounted(load);
+    return { rows, reset };
+  }
+};
+
+// ---------- 审计 ----------
+const Audit = {
+  template: `
+  <div class="card">
+    <b>审计日志（admin）</b>
+    <el-table :data="rows" border style="margin-top:16px">
+      <el-table-column prop="id" label="ID" width="70"/>
+      <el-table-column prop="user_id" label="用户ID" width="80"/>
+      <el-table-column prop="action" label="动作" width="80"/>
+      <el-table-column prop="resource" label="资源" width="110"/>
+      <el-table-column prop="resource_id" label="对象" width="140"/>
+      <el-table-column prop="created_at" label="时间" width="180"/>
+    </el-table>
+    <el-button style="margin-top:12px" @click="off+=50; load()">加载更多</el-button>
+  </div>`,
+  setup() {
+    const rows = ref([]); const off = ref(0);
+    const load = async () => {
+      const more = await api('GET', '/audit?limit=50&offset=' + off.value);
+      rows.value = rows.value.concat(more || []);
+    };
+    onMounted(load);
+    return { rows, off, load };
+  }
+};
+
+// ---------- 启动 ----------
+const app = createApp({
+  setup() {
+    const logged = ref(!!localStorage.getItem('token'));
+    onMounted(() => { if (!logged.value) { const t = localStorage.getItem('token'); } });
+    return { logged };
+  },
+  render: () => Vue.h(localStorage.getItem('token') ? Layout : Login)
+});
+app.use(ElementPlus, { locale: ElementPlusLocaleZhCn });
+for (const [n, c] of Object.entries(ElementPlusIconsVue || {})) app.component(n, c);
+app.mount('#app');
+</script>
+</body>
+</html>

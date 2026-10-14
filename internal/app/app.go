@@ -11,6 +11,7 @@ import (
 	"bincat/internal/meta"
 	"bincat/internal/observability"
 	"bincat/internal/pipeline"
+	"bincat/internal/server"
 	"bincat/internal/sink"
 )
 
@@ -23,6 +24,7 @@ type App struct {
 	cipher   *meta.Cipher
 	sinkPool *sink.Pool
 	manager  *pipeline.PipelineManager
+	server   *server.Server
 	metrics  *observability.MetricsServer
 }
 
@@ -48,8 +50,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		cfg: cfg, log: log, store: store, cpStore: cpStore, cipher: cipher, sinkPool: sink.NewPool(),
 	}, nil
 }
-
-// Start 启动全部组件（pipeline 管理器最后启动）
+// Start 启动全部组件（pipeline 管理器 → Web 后台）
 func (a *App) Start(ctx context.Context) error {
 	if a.cfg.Observability.Metrics.Enabled {
 		a.metrics = observability.NewMetricsServer(a.cfg.Observability.Metrics.Addr)
@@ -61,12 +62,26 @@ func (a *App) Start(ctx context.Context) error {
 		return fmt.Errorf("start pipeline manager: %w", err)
 	}
 	a.manager = mgr
+
+	// Web 后台
+	srv := server.New(a.cfg, a.store, mgr, a.log)
+	srv.SetDependencies(a.cpStore, a.cipher)
+	if err := srv.EnsureAdmin(ctx); err != nil {
+		a.log.Warn("ensure admin user failed", "err", err)
+	}
+	if err := srv.Start(); err != nil {
+		return fmt.Errorf("start admin server: %w", err)
+	}
+	a.server = srv
 	a.log.Info("bincat started", "addr", a.cfg.Server.Addr)
 	return nil
 }
 
-// Stop 优雅停机：pipeline → sink → 元数据库 → 指标
+// Stop 优雅停机：Web → pipeline → sink → 元数据库 → 指标
 func (a *App) Stop(ctx context.Context) {
+	if a.server != nil {
+		_ = a.server.Stop(ctx)
+	}
 	if a.manager != nil {
 		a.manager.StopAll()
 	}

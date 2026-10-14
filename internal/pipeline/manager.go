@@ -337,3 +337,22 @@ func (m *PipelineManager) ReloadRules(ctx context.Context, datasourceID int64) e
 
 // Reconcile 对外暴露的对账入口（后台数据源/sink 变更后调用）
 func (m *PipelineManager) Reconcile(ctx context.Context) error { return m.reconcile(ctx) }
+
+// Status 各数据源运行状态（监控面板数据）
+func (m *PipelineManager) Status() []map[string]any {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]map[string]any, 0, len(m.pipelines))
+	for id, p := range m.pipelines {
+		lastAcked := p.disp.LastAcked()
+		out = append(out, map[string]any{
+			"datasource_id":   id,
+			"datasource":      p.ds.Name,
+			"up":              true,
+			"server_id":       p.ds.ServerID,
+			"last_acked_file": lastAcked.Name,
+			"last_acked_pos":  lastAcked.Pos,
+		})
+	}
+	return out
+}
