@@ -5,6 +5,8 @@
 ## 文档入口
 
 - [部署与运维](docs/DEPLOYMENT.md)：本地演示、Linux systemd、首次验收、升级、回滚、备份、故障排查。
+- [MySQL 检查与配置指南](docs/MYSQL_SETUP.md)：检查 SQL、版本差异、开启 binlog、权限、建库和重启复查。
+- [HTTP 回调测试服务](docs/HTTP_CALLBACK_TEST.md)：Go 接收端启动、后台 HTTP 目标配置及控制台输出。
 - [配置参考](docs/CONFIGURATION.md)：环境变量、静态参数、数据源、规则、Sink、消息格式和监控。
 - [生产配置模板](configs/config.production.example.yaml)、[systemd 单元](deployments/systemd/bincat.service)、[环境文件模板](deployments/systemd/bincat.env.example)。
 - [第三方前端资源说明](internal/server/frontend/vendor/README.md)。
@@ -58,7 +60,8 @@ Makefile 默认使用 `~/sdk/go/bin/go`；通过 `GO` 参数可使用系统工�
 ## 项目结构
 
 ```text
-cmd/bincat/          程序入口
+cmd/bincat/          主服务入口
+cmd/http-callback-test/ 独立 HTTP 回调测试接收端
 internal/app/        组件装配与生命周期
 internal/config/     YAML、环境变量与启动校验
 internal/meta/       元数据库表、账号/审计与数据源密码加密
@@ -72,4 +75,45 @@ deployments/        演示 MySQL、systemd 模板
 docs/               部署与配置说明
 ```
 
-被监听源需开启 binlog、ROW/FULL，并为监听账号配置复制和 SELECT 权限。生产上线还需按目标 MySQL 版本确认列元数据、GTID 配置及 binlog 保留期。元数据库的六张表由程序首次启动创建，应用不会自动创建数据库账号或数据库本身。
+## MySQL 没配置时如何检查与修改
+
+先连接**被监听的源 MySQL**，执行：
+
+```sql
+SELECT VERSION(), @@hostname, @@port;
+SHOW GLOBAL VARIABLES WHERE Variable_name IN (
+  'log_bin', 'server_id', 'binlog_format', 'binlog_row_image',
+  'binlog_row_metadata', 'binlog_expire_logs_seconds', 'expire_logs_days',
+  'gtid_mode', 'enforce_gtid_consistency'
+);
+SHOW BINARY LOGS;
+```
+
+预期 `log_bin=ON`、`server_id` 非 0 且唯一、`binlog_format=ROW`、`binlog_row_image=FULL`；支持 `binlog_row_metadata` 的版本建议设 FULL。5.7 没有该变量，不应将它写入配置。日志保留时间应覆盖停机及恢复窗口。bincat 当前使用文件位点恢复，不需要强制开启 GTID。
+
+如果没有开启，在数据库服务器**实际加载的配置文件**的 `[mysqld]` 段设置以下内容，然后在维护窗口重启 MySQL：
+
+```ini
+# MySQL 8.0 / 8.4 示例：server_id 须按现有拓扑确认
+[mysqld]
+server_id=1
+log_bin=mysql-bin
+binlog_format=ROW
+binlog_row_image=FULL
+binlog_row_metadata=FULL
+binlog_expire_logs_seconds=864000
+```
+
+MySQL 5.7 移除最后两行，改用 `expire_logs_days=10`。重启的是 MySQL 服务，不是仅重启 bincat；重启后重新连接执行上述检查，并核对业务写入会话的 ROW/FULL 值。配置文件定位、各环境重启命令、版本对应的位点检查及详细判断见 [MySQL 指南](docs/MYSQL_SETUP.md)。
+
+监听账号另需全局 `REPLICATION SLAVE` / `REPLICATION CLIENT` 和实际业务表的 `SELECT` 权限；元数据库需预建库及有建表/读写权限的账号。具体的检查、CREATE USER / GRANT / CREATE DATABASE 示例均在上述指南中，不能只依靠后台“连接正常”判断完整链路就绪。
+
+## 本地接收 HTTP 回调
+
+另开一个终端，在项目根目录运行：
+
+```bash
+go run ./cmd/http-callback-test -addr 127.0.0.1:18080
+```
+
+在后台新增 http 投递目标，URL 填 `http://127.0.0.1:18080/callback`，点击“测试”，接收端控制台会打印真实探针事件。把规则目标设为此 Sink 后，再在测试库产生变更即可观察业务回调。curl、自定义端口和容器网络说明见 [HTTP 测试服务文档](docs/HTTP_CALLBACK_TEST.md)。

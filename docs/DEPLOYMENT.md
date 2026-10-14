@@ -1,5 +1,7 @@
 # 部署与运维
 
+MySQL 尚未准备好时，先按 [检查与配置指南](MYSQL_SETUP.md) 完成检查 SQL、参数修改、账号/元数据库创建及重启复查；需要观察 HTTP 回调时使用 [独立接收端](HTTP_CALLBACK_TEST.md)。
+
 本文对应仓库当前源码。bincat 是 Go 单二进制服务，Web 页面和本地 Vue / Element Plus 资源在编译时嵌入；部署无需 Node.js。Docker Compose 仅启动演示 MySQL，不包含 bincat 应用。
 
 ## 1. 环境和部署选择
@@ -8,7 +10,7 @@
 - 本地演示：Docker Engine / Docker Desktop 与 Compose 插件。没有 Docker 时可以使用已有 MySQL。
 - Linux 常驻运行：使用本文的 systemd 示例。macOS 本地开发可使用 `bincat.sh`。
 - 元数据库：须预先创建数据库及账号，应用首次启动自动创建六张元数据表。示例环境使用 MySQL 8.4；未建立各 MySQL 版本的完整兼容性测试矩阵。
-- 被监听源：开启 binlog，使用 ROW / FULL。GTID 模式需与源设置一致；每个复制客户端的 `server_id` 必须唯一。支持 `binlog_row_metadata` 的源应设置 FULL，否则当前丢弃缺少列元数据的行事件的配置可能导致没有业务消息；需按实际版本验收。
+- 被监听源：开启 binlog，使用 ROW / FULL。GTID 模式需与源设置一致；每个复制客户端的 `server_id` 必须唯一。支持 `binlog_row_metadata` 的源建议设置 FULL；当前 canal 也会查询表结构，5.7 没有此变量不应添加。缺少表结构/读取权限时可能跳过事件，需按实际版本验收。
 
 生产元数据库与业务源建议分开。单个数据源仅运行一个消费实例；当前没有主备选举和多实例位点协调。
 
@@ -32,7 +34,7 @@ make build GO="$(command -v go)"
 
 访问 `http://localhost:8080/`，账号 `admin`，密码为首次启动时的 `BINCAT_ADMIN_PASSWORD`。Compose 元数据库连接为 `127.0.0.1:33061/bincat_meta`，账号 `bincat`，演示密码 `bincat123`。这些公开密码只供本地演示；生产必须独立创建账号和强密码，不能直接使用此 Compose 暴露到公网。
 
-如果没有 Docker，在已有 MySQL 中创建元数据库和有建表、读写权限的账号，再修改 `configs/config.yaml` 中的 DSN。被监听源账号另需 `REPLICATION SLAVE`、`REPLICATION CLIENT` 和目标表 `SELECT` 权限；按实际 MySQL 版本及组织授权规则由 DBA 配置。
+如果没有 Docker，在已有 MySQL 中创建元数据库和有建表、读写权限的账号，再修改 `configs/config.yaml` 中的 DSN。被监听源账号另需 `REPLICATION SLAVE`、`REPLICATION CLIENT` 和目标表 `SELECT` 权限。如何确认缺少权限、补齐授权、创建元数据库和核对六张表，见 [MySQL 准备指南](MYSQL_SETUP.md)。
 
 本地后台方式：
 

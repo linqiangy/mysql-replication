@@ -1,5 +1,7 @@
 # 配置参考
 
+MySQL 参数与权限的具体检查/修改步骤见 [MySQL 准备指南](MYSQL_SETUP.md)，本地 HTTP 回调观察见 [测试服务说明](HTTP_CALLBACK_TEST.md)。
+
 静态启动配置由 `internal/config` 读取 YAML，修改后需重启。数据源、规则、投递目标和位点存放在元数据库，由后台管理。
 
 ## 环境变量
